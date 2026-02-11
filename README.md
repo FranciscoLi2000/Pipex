@@ -1,14 +1,3 @@
----
-AIGC:
-    ContentProducer: Minimax Agent AI
-    ContentPropagator: Minimax Agent AI
-    Label: AIGC
-    ProduceID: "00000000000000000000000000000000"
-    PropagateID: "00000000000000000000000000000000"
-    ReservedCode1: 304402200c322555e0e84f67ce121ad4e1d84e42aff1bfd0fb94264b2c4e30c7ba16e049022048f79b14ccfb60265585c8b47591a6fb60471b8a58a288856fe58cb10bc78ece
-    ReservedCode2: 3045022100d7629a0d6a8ebc7e480bd5e9f1a51fa4f53cd2bbeaedde0ee91ea0fdcf97ccc6022069f09638bfb40668730c46d02fd462fbc1d8aa2f389714c781f04c367bd84476
----
-
 # Pipex 项目 - Unix 管道编程
 
 ## 项目概述
