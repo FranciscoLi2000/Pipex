@@ -1,137 +1,436 @@
-# Pipex
+# Pipex — Guía completa de implementación en C
 
-我已读完两份PDF → 优先推荐：Pipex
- 
-理由：Pipex是42进程/IO/管道核心，直接支撑minishell、philosophers，学习价值远高于Minitalk。
- 
-下面只给你最稳、能直接过评审的版本，按格式来。
- 
- 
- 
-Pipex（必选）完整解析
- 
-1. 一句话总结
- 
-用C语言复现  < file1 cmd1 | cmd2 > file2  的管道行为，掌握fork/pipe/dup2/execve。
- 
-2. 项目目标
- 
-- 接收参数： ./pipex file1 cmd1 cmd2 file2 
-- 等价于shell管道命令
-- 严格处理错误、无崩溃、无内存泄漏
-- 符合42 Norm与Makefile规范
- 
-3. 核心思路
- 
-1. 创建管道 pipe()
-2. 父进程fork出两个子进程
-3. 子进程1：重定向输入为file1，输出为管道写端 → 执行cmd1
-4. 子进程2：重定向输入为管道读端，输出为file2 → 执行cmd2
-5. 父进程关闭所有文件描述符，等待子进程退出
- 
-4. 具体步骤（按这个写必过）
- 
-1. 参数检查：必须5个参数
-2. 打开 file1(只读)、file2(创建/截断)
-3. 调用 pipe() 得到 fd[0]读, fd[1]写
-4. fork 子进程1（cmd1）- dup2(file1, 0)
-- dup2(fd[1], 1)
-- 关闭所有无用fd
-- 解析命令并 execve
-5. fork 子进程2（cmd2）- dup2(fd[0], 0)
-- dup2(file2, 1)
-- 关闭所有无用fd
-- 解析命令并 execve
-6. 父进程：close所有fd → waitpid两个子进程
-7. 完善错误处理与内存释放
- 
-5. 代码建议（稳妥版）
- 
-- 用libft拆分命令、查找PATH
-- 写工具函数： get_path() 、 exec_cmd() 、 error() 
-- 所有系统调用必须检查返回值
-- 所有fd用完立即close
-- 禁止全局变量
-- Makefile必须包含 NAME/all/clean/fclean/re
- 
-6. 测试方法
- 
-bash
-  
-# 基础测试
-./pipex infile "ls -l" "wc -l" outfile
-< infile ls -l | wc -l > outfile  # 对比结果
+> Proyecto de 42. Replica el comportamiento de la tubería de shell `< file1 cmd1 | cmd2 > file2` usando las syscalls `pipe`, `fork`, `dup2` y `execve`.
 
-# 边界测试
-- 不存在的文件
-- 不存在的命令
-- 无权限文件
-- 空文件
-- 带参数的命令
- 
- 
-7. 常见错误（评审必查）
- 
-- 管道/文件描述符泄漏 → 卡死
-- dup2顺序错 → 输入输出反了
-- 没关fd → 进程不退出
-- execve路径不对 → 命令找不到
-- 父进程不wait → 僵尸进程
-- 内存泄漏 → 直接0分
-- Norm错误 → 直接0分
- 
- 
- 
-你现在最该做的
- 
-1. 先做Pipex，不要碰Minitalk
-2. 先搭框架：Makefile + pipex.h + 主流程骨架
-3. 先实现管道+双进程，再做命令解析
+---
 
-我直接给你可编译、可运行、符合42 Norm、评审稳过的 Pipex 完整骨架代码，包含：
- 
-- Makefile
-- pipex.h
-- pipex.c（主流程）
-- utils.c（工具函数）
-你复制即可用，逻辑极简、注释拉满。
- 
- 
- 
-1. Makefile
- 
-makefile
-  
-NAME    = pipex
+## Índice
+
+1. [Qué hace este proyecto](#1-qué-hace-este-proyecto)
+2. [Estructura de archivos](#2-estructura-de-archivos)
+3. [Conceptos clave del sistema operativo](#3-conceptos-clave-del-sistema-operativo)
+4. [Parte obligatoria: paso a paso](#4-parte-obligatoria-paso-a-paso)
+   - 4.1 [libft — funciones de utilidad](#41-libft--funciones-de-utilidad)
+   - 4.2 [includes/pipex.h](#42-includespipexh)
+   - 4.3 [src/ft\_error.c](#43-srcft_errorc)
+   - 4.4 [src/ft\_path.c](#44-srcft_pathc)
+   - 4.5 [src/ft\_exec.c](#45-srcft_execc)
+   - 4.6 [src/pipex.c](#46-srcpipexc)
+   - 4.7 [Makefile raíz](#47-makefile-raíz)
+5. [Parte bonus: paso a paso](#5-parte-bonus-paso-a-paso)
+   - 5.1 [includes/pipex\_bonus.h](#51-includespipex_bonush)
+   - 5.2 [bonus/ft\_error\_bonus.c](#52-bonusft_error_bonusc)
+   - 5.3 [bonus/ft\_path\_bonus.c y ft\_exec\_bonus.c](#53-bonusft_path_bonusc-y-ft_exec_bonusc)
+   - 5.4 [bonus/ft\_here\_doc\_bonus.c](#54-bonusft_here_doc_bonusc)
+   - 5.5 [bonus/pipex\_bonus.c](#55-bonuspipex_bonusc)
+6. [Compilar y ejecutar](#6-compilar-y-ejecutar)
+7. [Casos de prueba completos](#7-casos-de-prueba-completos)
+8. [Errores frecuentes y cómo evitarlos](#8-errores-frecuentes-y-cómo-evitarlos)
+9. [Gestión de memoria y descriptores de fichero](#9-gestión-de-memoria-y-descriptores-de-fichero)
+
+---
+
+## 1. Qué hace este proyecto
+
+### Parte obligatoria
+
+```bash
+./pipex file1 cmd1 cmd2 file2
+```
+
+Es equivalente a:
+
+```bash
+< file1 cmd1 | cmd2 > file2
+```
+
+El programa abre `file1` como entrada estándar del primer comando, conecta la
+salida de ese comando con la entrada del segundo mediante una tubería del
+kernel, y redirige la salida final hacia `file2`.
+
+### Parte bonus
+
+```bash
+# Múltiples comandos encadenados
+./pipex file1 cmd1 cmd2 cmd3 ... cmdn file2
+
+# Heredoc: equivale a cmd1 << LIMITER | cmd2 >> file
+./pipex here_doc LIMITER cmd1 cmd2 file
+```
+
+---
+
+## 2. Estructura de archivos
+
+```
+pipex/
+├── Makefile                  ← reglas: all / bonus / clean / fclean / re
+├── includes/
+│   ├── pipex.h               ← cabecera parte obligatoria
+│   └── pipex_bonus.h         ← cabecera parte bonus
+├── libft/
+│   ├── Makefile
+│   ├── libft.h
+│   ├── ft_strlen.c
+│   ├── ft_strncmp.c
+│   ├── ft_strcmp.c
+│   ├── ft_putstr_fd.c
+│   ├── ft_strjoin.c
+│   ├── ft_substr.c
+│   └── ft_split.c
+├── src/                      ← parte obligatoria
+│   ├── pipex.c
+│   ├── ft_error.c
+│   ├── ft_path.c
+│   └── ft_exec.c
+└── bonus/                    ← parte bonus
+    ├── pipex_bonus.c
+    ├── ft_error_bonus.c
+    ├── ft_path_bonus.c
+    ├── ft_exec_bonus.c
+    └── ft_here_doc_bonus.c
+```
+
+---
+
+## 3. Conceptos clave del sistema operativo
+
+Antes de escribir una sola línea es imprescindible entender cuatro syscalls:
+
+### `pipe(int fd[2])`
+
+Crea un canal de comunicación unidireccional dentro del kernel.
+
+- `fd[0]` → extremo de **lectura**
+- `fd[1]` → extremo de **escritura**
+
+Los datos escritos en `fd[1]` se pueden leer desde `fd[0]`. Si todos los
+descriptores de escritura se cierran, la lectura devuelve 0 (EOF). Si quedan
+descriptores de escritura abiertos (incluso en el proceso padre) la lectura
+**bloqueará para siempre**.
+
+```c
+int fd[2];
+pipe(fd);  // fd[0]=leer, fd[1]=escribir
+```
+
+### `fork()`
+
+Crea un proceso hijo que es copia exacta del padre. El espacio de memoria se
+duplica (copy-on-write). Los descriptores de fichero abiertos se heredan.
+
+| Valor de retorno | Significado |
+|---|---|
+| `-1` | Error — no se creó el hijo |
+| `0` | Estamos en el **proceso hijo** |
+| `> 0` | Estamos en el **proceso padre**; el valor es el PID del hijo |
+
+```c
+pid_t pid = fork();
+if (pid == -1)  { /* error */ }
+if (pid == 0)   { /* código del hijo */ }
+/* código del padre continúa aquí */
+```
+
+### `dup2(int oldfd, int newfd)`
+
+Duplica `oldfd` en `newfd`. Si `newfd` ya estaba abierto, lo cierra primero.
+Después de la llamada, `newfd` apunta al mismo recurso que `oldfd`.
+
+Se usa para redirigir stdin (fd=0) y stdout (fd=1):
+
+```c
+dup2(infile,  STDIN_FILENO);   // stdin  → infile
+dup2(fd[1],   STDOUT_FILENO);  // stdout → extremo escritura del pipe
+```
+
+Regla: después de `dup2`, cierra el descriptor original (`oldfd`), porque ya
+tienes el alias `newfd` y no necesitas dos entradas.
+
+### `execve(const char *path, char **argv, char **envp)`
+
+Reemplaza el proceso actual por el programa indicado en `path`. Si tiene
+éxito, **no vuelve**; la función solo retorna si hubo un error.
+
+```c
+execve("/bin/ls", argv, envp);
+// Si llegamos aquí, execve falló
+perror("execve");
+exit(EXIT_FAILURE);
+```
+
+---
+
+## 4. Parte obligatoria: paso a paso
+
+### 4.1 libft — funciones de utilidad
+
+La biblioteca está en `libft/` y compila como archivo estático `libft.a`.
+Se enlaza tanto con la parte obligatoria como con la bonus.
+
+**`libft/libft.h`**
+
+```c
+#ifndef LIBFT_H
+# define LIBFT_H
+
+# include <stdlib.h>
+# include <unistd.h>
+
+size_t   ft_strlen(const char *s);
+int      ft_strncmp(const char *s1, const char *s2, size_t n);
+int      ft_strcmp(char *s1, char *s2);
+void     ft_putstr_fd(char *s, int fd);
+char    *ft_strjoin(char const *s1, char const *s2);
+char    *ft_substr(char const *s, unsigned int start, size_t len);
+char   **ft_split(char const *s, char c);
+
+#endif
+```
+
+**`libft/ft_strlen.c`** — longitud de cadena
+
+```c
+#include "libft.h"
+
+size_t  ft_strlen(const char *s)
+{
+    size_t  i;
+
+    i = 0;
+    while (s[i])
+        i++;
+    return (i);
+}
+```
+
+**`libft/ft_strncmp.c`** — comparación de N bytes
+
+```c
+#include "libft.h"
+
+int ft_strncmp(const char *s1, const char *s2, size_t n)
+{
+    size_t  i;
+
+    i = 0;
+    if (n == 0)
+        return (0);
+    while (i < n - 1 && s1[i] && s2[i] && s1[i] == s2[i])
+        i++;
+    return ((unsigned char)s1[i] - (unsigned char)s2[i]);
+}
+```
+
+**`libft/ft_strcmp.c`** — comparación completa (usada en bonus)
+
+```c
+#include "libft.h"
+
+int ft_strcmp(char *s1, char *s2)
+{
+    int i;
+
+    i = 0;
+    while (s1[i] && s2[i] && s1[i] == s2[i])
+        i++;
+    return ((unsigned char)s1[i] - (unsigned char)s2[i]);
+}
+```
+
+**`libft/ft_putstr_fd.c`** — escribe cadena en un descriptor
+
+```c
+#include "libft.h"
+
+void    ft_putstr_fd(char *s, int fd)
+{
+    if (!s)
+        return ;
+    write(fd, s, ft_strlen(s));
+}
+```
+
+**`libft/ft_strjoin.c`** — concatena dos cadenas en nuevo malloc
+
+```c
+#include "libft.h"
+
+char    *ft_strjoin(char const *s1, char const *s2)
+{
+    char    *str;
+    size_t   i;
+    size_t   j;
+
+    if (!s1 || !s2)
+        return (NULL);
+    str = malloc(ft_strlen(s1) + ft_strlen(s2) + 1);
+    if (!str)
+        return (NULL);
+    i = 0;
+    while (s1[i])
+    {
+        str[i] = s1[i];
+        i++;
+    }
+    j = 0;
+    while (s2[j])
+        str[i++] = s2[j++];
+    str[i] = 0;
+    return (str);
+}
+```
+
+**`libft/ft_substr.c`** — extrae subcadena
+
+```c
+#include "libft.h"
+
+char    *ft_substr(char const *s, unsigned int start, size_t len)
+{
+    char    *sub;
+    size_t   slen;
+    size_t   i;
+
+    if (!s)
+        return (NULL);
+    slen = ft_strlen(s);
+    if (start >= (unsigned int)slen)
+        len = 0;
+    else if (len > slen - start)
+        len = slen - start;
+    sub = malloc(len + 1);
+    if (!sub)
+        return (NULL);
+    i = 0;
+    while (i < len)
+    {
+        sub[i] = s[start + i];
+        i++;
+    }
+    sub[i] = 0;
+    return (sub);
+}
+```
+
+**`libft/ft_split.c`** — divide cadena por un carácter delimitador
+
+Esta función es la más compleja. Necesita tres auxiliares:
+
+- `count_words` — cuenta el número de palabras.
+- `word_len` — longitud de la siguiente palabra.
+- `free_all` — libera el array en caso de fallo de malloc.
+
+```c
+#include "libft.h"
+
+static size_t   count_words(char const *s, char c)
+{
+    size_t  cnt;
+    size_t  i;
+
+    cnt = 0;
+    i = 0;
+    while (s[i])
+    {
+        if (s[i] != c && (i == 0 || s[i - 1] == c))
+            cnt++;
+        i++;
+    }
+    return (cnt);
+}
+
+static char **free_all(char **arr)
+{
+    size_t  i;
+
+    i = 0;
+    while (arr[i])
+    {
+        free(arr[i]);
+        i++;
+    }
+    free(arr);
+    return (NULL);
+}
+
+static size_t   word_len(char const *s, size_t i, char c)
+{
+    size_t  len;
+
+    len = 0;
+    while (s[i + len] && s[i + len] != c)
+        len++;
+    return (len);
+}
+
+char    **ft_split(char const *s, char c)
+{
+    char    **res;
+    size_t    i;
+    size_t    j;
+    size_t    len;
+
+    if (!s)
+        return (NULL);
+    res = malloc(sizeof(char *) * (count_words(s, c) + 1));
+    if (!res)
+        return (NULL);
+    i = 0;
+    j = 0;
+    while (j < count_words(s, c))
+    {
+        while (s[i] == c)
+            i++;
+        len = word_len(s, i, c);
+        res[j] = ft_substr(s, i, len);
+        if (!res[j])
+            return (free_all(res));
+        i += len;
+        j++;
+    }
+    res[j] = NULL;
+    return (res);
+}
+```
+
+**`libft/Makefile`**
+
+```makefile
+NAME    = libft.a
 CC      = cc
 CFLAGS  = -Wall -Wextra -Werror
+AR      = ar rcs
 RM      = rm -rf
 
-SRCS    = pipex.c utils.c
+SRCS    = ft_strlen.c ft_strncmp.c ft_strcmp.c ft_putstr_fd.c \
+          ft_strjoin.c ft_substr.c ft_split.c
 OBJS    = $(SRCS:.c=.o)
 
 all: $(NAME)
 
 $(NAME): $(OBJS)
-	$(CC) $(CFLAGS) $(OBJS) -o $(NAME)
+$(AR) $(NAME) $(OBJS)
 
 clean:
-	$(RM) $(OBJS)
+$(RM) $(OBJS)
 
 fclean: clean
-	$(RM) $(NAME)
+$(RM) $(NAME)
 
 re: fclean all
 
 .PHONY: all clean fclean re
- 
- 
- 
- 
-2. pipex.h
- 
-c
-  
+```
+
+---
+
+### 4.2 `includes/pipex.h`
+
+Centraliza todos los includes del sistema y las macros de error, más los
+prototipos de las funciones distribuidas en varios archivos.
+
+```c
 #ifndef PIPEX_H
 # define PIPEX_H
 
@@ -140,636 +439,365 @@ c
 # include <sys/types.h>
 # include <sys/stat.h>
 # include <fcntl.h>
-# include <stdio.h>
 # include <stdlib.h>
-# include <string.h>
+# include <stdio.h>
 # include <errno.h>
+# include "libft.h"
 
-# define ERR_INPUT "Invalid number of arguments.\n"
-# define ERR_PIPE "Pipe error"
-# define ERR_FORK "Fork error"
-# define ERR_OPEN "Open error"
-# define ERR_CMD "Command not found"
+# define ERR_ARGS  "Usage: ./pipex file1 cmd1 cmd2 file2\n"
+# define ERR_PIPE  "pipe"
+# define ERR_FORK  "fork"
+# define ERR_OPEN  "open"
+# define ERR_CMD   "command not found"
+# define ERR_EXEC  "execve"
 
-// utils.c
-void    err_msg(char *msg);
-void    free_split(char **str);
-char    *get_path(char *cmd, char **envp);
-void    exec_cmd(char *argv, char **envp);
+/* ft_error.c */
+void    err_exit(char *msg);
+void    free_tab(char **tab);
 
-// pipex.c
-void    child_process1(int *fd, char **argv, char **envp);
-void    child_process2(int *fd, char **argv, char **envp);
-void    pipex(char **argv, char **envp);
+/* ft_path.c */
+char   *get_path(char *cmd, char **envp);
+
+/* ft_exec.c */
+void    exec_cmd(char *arg, char **envp);
+
+/* pipex.c */
+void    child1(int fd[2], char **argv, char **envp);
+void    child2(int fd[2], char **argv, char **envp);
 
 #endif
- 
- 
- 
- 
-3. utils.c（工具函数：错误、路径查找、执行）
- 
-c
-  
+```
+
+Por qué una macro por error: `perror` imprime el prefijo que le pasamos y
+añade `: <descripción del errno>` automáticamente, así los mensajes son
+informativos sin añadir código extra.
+
+---
+
+### 4.3 `src/ft_error.c`
+
+```c
 #include "pipex.h"
 
-// 打印错误并退出
-void    err_msg(char *msg)
+/* Imprime el error del sistema y termina el proceso. */
+void    err_exit(char *msg)
 {
     perror(msg);
     exit(EXIT_FAILURE);
 }
 
-// 释放split二维数组
-void    free_split(char **str)
+/*
+** Libera un array de cadenas terminado en NULL (resultado de ft_split).
+** Primero libera cada cadena, luego el array que las contiene.
+*/
+void    free_tab(char **tab)
 {
     int i;
 
     i = 0;
-    while (str[i])
+    while (tab[i])
     {
-        free(str[i]);
+        free(tab[i]);
         i++;
     }
-    free(str);
+    free(tab);
 }
+```
 
-// 从PATH中找命令可执行路径
-char    *get_path(char *cmd, char **envp)
+`free_tab` existe porque `ft_split` crea un array de punteros en el heap.
+Para no filtrar memoria hay que liberar cada elemento y después el propio
+array.
+
+---
+
+### 4.4 `src/ft_path.c`
+
+El objetivo es obtener la ruta absoluta de un comando (por ejemplo `cat`)
+buscando en las entradas de la variable de entorno `PATH`.
+
+```
+PATH=/usr/local/bin:/usr/bin:/bin
+```
+
+El algoritmo:
+
+1. Recorre `envp[]` hasta encontrar la entrada que empieza por `"PATH="`.
+2. Divide la lista de directorios con `ft_split(..., ':')`.
+3. Para cada directorio prueba `directorio + "/" + comando` con `access`.
+4. Devuelve la primera ruta válida, o `NULL` si no existe.
+
+```c
+#include "pipex.h"
+
+/*
+** Prueba cada directorio en dirs[]. Libera dirs y devuelve la ruta
+** que sea ejecutable, o NULL si ninguna lo es.
+*/
+static char *check_paths(char **dirs, char *cmd)
 {
-    char    **path_env;
-    char    *path;
     char    *temp;
-    int     i;
+    char    *path;
+    int      i;
 
     i = 0;
-    while (envp[i] && strncmp(envp[i], "PATH=", 5))
-        i++;
-    path_env = ft_split(envp[i] + 5, ':'); // 需用你的libft ft_split
-    i = 0;
-    while (path_env[i])
+    while (dirs[i])
     {
-        temp = ft_strjoin(path_env[i], "/");
+        temp = ft_strjoin(dirs[i], "/");
         path = ft_strjoin(temp, cmd);
         free(temp);
         if (access(path, F_OK | X_OK) == 0)
         {
-            free_split(path_env);
+            free_tab(dirs);
             return (path);
         }
         free(path);
         i++;
     }
-    free_split(path_env);
+    free_tab(dirs);
     return (NULL);
 }
 
-// 执行命令
+char    *get_path(char *cmd, char **envp)
+{
+    char    **path_env;
+    int       i;
+
+    i = 0;
+    while (envp[i] && ft_strncmp(envp[i], "PATH=", 5))
+        i++;
+    if (!envp[i])
+        return (NULL);
+    path_env = ft_split(envp[i] + 5, ':');   /* salta "PATH=" */
+    if (!path_env)
+        return (NULL);
+    return (check_paths(path_env, cmd));
+}
+```
+
+**Puntos críticos:**
+
+- `envp[i] + 5` salta los cinco caracteres de `"PATH="`.
+- `check_paths` recibe la propiedad del array `dirs` y siempre lo libera
+  (tanto en el camino de éxito como en el de fallo), así no hay fugas.
+
+---
+
+### 4.5 `src/ft_exec.c`
+
+Divide el argumento de comando (p. ej. `"ls -l"`) en tokens, busca la ruta
+y llama a `execve`.
+
+```c
+#include "pipex.h"
+
 void    exec_cmd(char *arg, char **envp)
 {
     char    **cmd;
-    char    *path;
+    char     *path;
 
-    cmd = ft_split(arg, ' '); // 拆分命令与参数
+    /* "ls -l" → ["ls", "-l", NULL] */
+    cmd = ft_split(arg, ' ');
+    if (!cmd || !cmd[0])
+    {
+        free_tab(cmd);
+        err_exit(ERR_CMD);
+    }
     path = get_path(cmd[0], envp);
     if (!path)
     {
-        free_split(cmd);
-        err_msg(ERR_CMD);
+        free_tab(cmd);
+        err_exit(ERR_CMD);
     }
-    if (execve(path, cmd, envp) == -1)
-    {
-        free_split(cmd);
-        free(path);
-        err_msg("Execve error");
-    }
+    execve(path, cmd, envp);
+    /* Si llegamos aquí, execve falló */
+    free_tab(cmd);
+    free(path);
+    err_exit(ERR_EXEC);
 }
- 
- 
- 
- 
-4. pipex.c（核心主流程：管道 + 双进程）
- 
-c
-  
+```
+
+`execve` recibe:
+- `path` — ruta absoluta del ejecutable.
+- `cmd` — argv del programa nuevo (el primer elemento es el nombre del programa).
+- `envp` — variables de entorno heredadas del proceso padre.
+
+Si `execve` tiene éxito el proceso se transforma: las líneas siguientes nunca
+se ejecutan. Si falla, las líneas siguientes limpian la memoria e informan del
+error.
+
+---
+
+### 4.6 `src/pipex.c`
+
+Es el corazón del proyecto. Crea el pipe, lanza los dos procesos hijo y espera
+a que terminen.
+
+```c
 #include "pipex.h"
 
-// 子进程1：执行 cmd1，输入=file1，输出=管道写端
-void    child_process1(int *fd, char **argv, char **envp)
+/*
+** Hijo 1: abre file1, redirige stdin hacia él,
+**         redirige stdout hacia el extremo de escritura del pipe,
+**         ejecuta cmd1.
+*/
+void    child1(int fd[2], char **argv, char **envp)
 {
     int infile;
 
     infile = open(argv[1], O_RDONLY);
     if (infile == -1)
-        err_msg(ERR_OPEN);
-    dup2(infile, 0);    // 标准输入 → infile
-    dup2(fd[1], 1);    // 标准输出 → 管道写
-    close(fd[0]);
-    close(fd[1]);
+        err_exit(ERR_OPEN);
+    dup2(infile, STDIN_FILENO);   /* stdin  ← file1 */
+    dup2(fd[1],  STDOUT_FILENO);  /* stdout → pipe[escritura] */
+    close(fd[0]);   /* el hijo no lee del pipe */
+    close(fd[1]);   /* ya está duplicado en stdout */
+    close(infile);  /* ya está duplicado en stdin */
     exec_cmd(argv[2], envp);
 }
 
-// 子进程2：执行 cmd2，输入=管道读端，输出=file2
-void    child_process2(int *fd, char **argv, char **envp)
+/*
+** Hijo 2: abre file2 para escritura (creándolo o truncándolo),
+**         redirige stdin hacia el extremo de lectura del pipe,
+**         redirige stdout hacia file2,
+**         ejecuta cmd2.
+*/
+void    child2(int fd[2], char **argv, char **envp)
 {
     int outfile;
 
     outfile = open(argv[4], O_WRONLY | O_CREAT | O_TRUNC, 0644);
     if (outfile == -1)
-        err_msg(ERR_OPEN);
-    dup2(fd[0], 0);    // 标准输入 → 管道读
-    dup2(outfile, 1);  // 标准输出 → outfile
+        err_exit(ERR_OPEN);
+    dup2(fd[0],   STDIN_FILENO);   /* stdin  ← pipe[lectura] */
+    dup2(outfile, STDOUT_FILENO);  /* stdout → file2 */
     close(fd[0]);
     close(fd[1]);
+    close(outfile);
     exec_cmd(argv[3], envp);
 }
 
-// 主流程：pipe → fork → 双进程 → 等待
-void    pipex(char **argv, char **envp)
+int main(int argc, char **argv, char **envp)
 {
     int     fd[2];
     pid_t   pid1;
     pid_t   pid2;
-    int     status;
 
-    if (pipe(fd) == -1)
-        err_msg(ERR_PIPE);
-    pid1 = fork();
-    if (pid1 == -1)
-        err_msg(ERR_FORK);
-    if (pid1 == 0)
-        child_process1(fd, argv, envp);
-    pid2 = fork();
-    if (pid2 == -1)
-        err_msg(ERR_FORK);
-    if (pid2 == 0)
-        child_process2(fd, argv, envp);
-    // 父进程：关闭所有fd，等待子进程
-    close(fd[0]);
-    close(fd[1]);
-    waitpid(pid1, &status, 0);
-    waitpid(pid2, &status, 0);
-}
-
-// 主函数：参数检查
-int main(int argc, char **argv, char **envp)
-{
     if (argc != 5)
     {
-        ft_putstr_fd(ERR_INPUT, 2);
-        exit(EXIT_FAILURE);
+        ft_putstr_fd(ERR_ARGS, 2);
+        return (EXIT_FAILURE);
     }
-    pipex(argv, envp);
-    return (0);
+    if (pipe(fd) == -1)
+        err_exit(ERR_PIPE);
+    pid1 = fork();
+    if (pid1 == -1)
+        err_exit(ERR_FORK);
+    if (pid1 == 0)
+        child1(fd, argv, envp);   /* sólo el hijo llega aquí */
+    pid2 = fork();
+    if (pid2 == -1)
+        err_exit(ERR_FORK);
+    if (pid2 == 0)
+        child2(fd, argv, envp);   /* sólo el hijo llega aquí */
+    /*
+    ** El padre DEBE cerrar los dos extremos del pipe.
+    ** Si no, child2 nunca recibe EOF porque el padre sigue
+    ** con fd[1] abierto, y el proceso se bloquea para siempre.
+    */
+    close(fd[0]);
+    close(fd[1]);
+    waitpid(pid1, NULL, 0);  /* espera a cmd1 */
+    waitpid(pid2, NULL, 0);  /* espera a cmd2 */
+    return (EXIT_SUCCESS);
 }
- 
- 
- 
- 
-🔥 直接使用说明
- 
-1. 把你的 libft 文件夹放同级，Makefile能链接到  ft_split/ft_strjoin/ft_putstr_fd 
-2. 编译： make 
-3. 测试：
- 
-bash
-  
-echo "hello 42" > infile
-./pipex infile "cat" "wc -w" outfile
-cat outfile  # 应输出 2
- 
- 
- 
- 
-我写代码的核心特点（评审必过）
- 
-1. 结构清晰：主流程/工具分离，易读易改
-2. 错误全覆盖：open/pipe/fork/execve 全检查
-3. FD不泄漏：所有文件描述符及时关闭
-4. 内存安全：split/free 配对
-5. 符合Norm：无全局变量、无长函数、格式规范
-6. 行为和shell一致：评审满分标准
+```
 
-我现在给你完全独立、无外部依赖、可直接编译运行的最终版 Pipex，把libft 必备函数内置，修复所有评审坑点，注释拉满，你复制即跑、直接过审。
- 
-完整可运行 Pipex 最终代码（无依赖）
- 
-1. Makefile
- 
-makefile
-  
-NAME    = pipex
-CC      = cc
-CFLAGS  = -Wall -Wextra -Werror -std=c99
-RM      = rm -rf
+**Flujo de descriptores** (diagrama):
 
-SRCS    = pipex.c utils.c
-OBJS    = $(SRCS:.c=.o)
+```
+ parent/child1                          parent/child2
+ ─────────────                          ─────────────
+ infile → dup2 → stdin(0)              pipe[0] → dup2 → stdin(0)
+ pipe[1] → dup2 → stdout(1)            outfile → dup2 → stdout(1)
+ close(pipe[0])                         close(pipe[1])
+ close(pipe[1])  ← ya en stdout         close(pipe[0])  ← ya en stdin
+ close(infile)   ← ya en stdin          close(outfile)  ← ya en stdout
+          │ execve(cmd1)                          │ execve(cmd2)
+          │                                       │
+          └──────── pipe kernel ─────────────────►│
+```
 
-all: $(NAME)
+---
 
-$(NAME): $(OBJS)
-	$(CC) $(CFLAGS) $(OBJS) -o $(NAME)
+### 4.7 Makefile raíz
 
-clean:
-	$(RM) $(OBJS)
-
-fclean: clean
-	$(RM) $(NAME)
-
-re: fclean all
-
-.PHONY: all clean fclean re
- 
- 
-2. pipex.h
- 
-c
-  
-#ifndef PIPEX_H
-# define PIPEX_H
-
-# include <unistd.h>
-# include <sys/wait.h>
-# include <sys/types.h>
-# include <sys/stat.h>
-# include <fcntl.h>
-# include <stdio.h>
-# include <stdlib.h>
-# include <string.h>
-# include <errno.h>
-
-# define ERR_INPUT	"Usage: ./pipex file1 cmd1 cmd2 file2\n"
-# define ERR_PIPE	"Pipe error"
-# define ERR_FORK	"Fork error"
-# define ERR_OPEN	"Open error"
-# define ERR_CMD	"Command not found"
-# define ERR_EXEC	"Execve failed"
-
-// utils.c
-void	err_msg(char *msg);
-void	free_split(char **str);
-char	*get_path(char *cmd, char **envp);
-void	exec_cmd(char *argv, char **envp);
-void	ft_putstr_fd(char *s, int fd);
-char	*ft_strjoin(char const *s1, char const *s2);
-char	**ft_split(char const *s, char c);
-int		ft_strncmp(const char *s1, const char *s2, size_t n);
-size_t	ft_strlen(const char *s);
-
-// pipex.c
-void	child1(int fd[2], char **argv, char **envp);
-void	child2(int fd[2], char **argv, char **envp);
-
-#endif
- 
- 
-3. utils.c（内置libft函数 + 工具逻辑）
- 
-c
-  
-#include "pipex.h"
-
-size_t	ft_strlen(const char *s)
-{
-	size_t	i;
-
-	i = 0;
-	while (s[i])
-		i++;
-	return (i);
-}
-
-int	ft_strncmp(const char *s1, const char *s2, size_t n)
-{
-	size_t	i;
-
-	i = 0;
-	if (n == 0)
-		return (0);
-	while (i < n - 1 && s1[i] && s2[i] && s1[i] == s2[i])
-		i++;
-	return ((unsigned char)s1[i] - (unsigned char)s2[i]);
-}
-
-void	ft_putstr_fd(char *s, int fd)
-{
-	if (!s)
-		return ;
-	write(fd, s, ft_strlen(s));
-}
-
-char	*ft_strjoin(char const *s1, char const *s2)
-{
-	char	*str;
-	size_t	i;
-	size_t	j;
-
-	if (!s1 || !s2)
-		return (NULL);
-	str = malloc(ft_strlen(s1) + ft_strlen(s2) + 1);
-	if (!str)
-		return (NULL);
-	i = 0;
-	while (s1[i])
-	{
-		str[i] = s1[i];
-		i++;
-	}
-	j = 0;
-	while (s2[j])
-		str[i++] = s2[j++];
-	str[i] = 0;
-	return (str);
-}
-
-static size_t	count_words(char const *s, char c)
-{
-	size_t	cnt;
-	size_t	i;
-
-	cnt = 0;
-	i = 0;
-	while (s[i])
-	{
-		if (s[i] != c && (i == 0 || s[i - 1] == c))
-			cnt++;
-		i++;
-	}
-	return (cnt);
-}
-
-static char	**free_all(char **arr)
-{
-	size_t	i;
-
-	i = 0;
-	while (arr[i])
-	{
-		free(arr[i]);
-		i++;
-	}
-	free(arr);
-	return (NULL);
-}
-
-char	**ft_split(char const *s, char c)
-{
-	char	**res;
-	size_t	i;
-	size_t	j;
-	size_t	len;
-
-	res = malloc(sizeof(char *) * (count_words(s, c) + 1));
-	if (!res || !s)
-		return (NULL);
-	i = 0;
-	j = 0;
-	while (j < count_words(s, c))
-	{
-		while (s[i] == c)
-			i++;
-		len = 0;
-		while (s[i + len] && s[i + len] != c)
-			len++;
-		res[j] = ft_substr(s, i, len);
-		if (!res[j])
-			return (free_all(res));
-		i += len;
-		j++;
-	}
-	res[j] = NULL;
-	return (res);
-}
-
-void	err_msg(char *msg)
-{
-	perror(msg);
-	exit(EXIT_FAILURE);
-}
-
-void	free_split(char **str)
-{
-	int	i;
-
-	i = 0;
-	while (str[i])
-	{
-		free(str[i]);
-		i++;
-	}
-	free(str);
-}
-
-char	*get_path(char *cmd, char **envp)
-{
-	char	**path_env;
-	char	*path;
-	char	*temp;
-	int		i;
-
-	i = 0;
-	while (envp[i] && ft_strncmp(envp[i], "PATH=", 5))
-		i++;
-	if (!envp[i])
-		return (NULL);
-	path_env = ft_split(envp[i] + 5, ':');
-	i = 0;
-	while (path_env[i])
-	{
-		temp = ft_strjoin(path_env[i], "/");
-		path = ft_strjoin(temp, cmd);
-		free(temp);
-		if (access(path, F_OK | X_OK) == 0)
-			return (free_split(path_env), path);
-		free(path);
-		i++;
-	}
-	free_split(path_env);
-	return (NULL);
-}
-
-void	exec_cmd(char *arg, char **envp)
-{
-	char	**cmd;
-	char	*path;
-
-	cmd = ft_split(arg, ' ');
-	if (!cmd || !cmd[0])
-	{
-		free_split(cmd);
-		err_msg(ERR_CMD);
-	}
-	path = get_path(cmd[0], envp);
-	if (!path)
-	{
-		free_split(cmd);
-		err_msg(ERR_CMD);
-	}
-	execve(path, cmd, envp);
-	free_split(cmd);
-	free(path);
-	err_msg(ERR_EXEC);
-}
- 
- 
-4. pipex.c（核心流程）
- 
-c
-  
-#include "pipex.h"
-
-// 子进程1：输入=file1，输出=管道写端
-void	child1(int fd[2], char **argv, char **envp)
-{
-	int	infile;
-
-	infile = open(argv[1], O_RDONLY);
-	if (infile == -1)
-		err_msg(ERR_OPEN);
-	dup2(infile, 0);
-	dup2(fd[1], 1);
-	close(fd[0]);
-	close(fd[1]);
-	close(infile);
-	exec_cmd(argv[2], envp);
-}
-
-// 子进程2：输入=管道读端，输出=file2
-void	child2(int fd[2], char **argv, char **envp)
-{
-	int	outfile;
-
-	outfile = open(argv[4], O_WRONLY | O_CREAT | O_TRUNC, 0644);
-	if (outfile == -1)
-		err_msg(ERR_OPEN);
-	dup2(fd[0], 0);
-	dup2(outfile, 1);
-	close(fd[0]);
-	close(fd[1]);
-	close(outfile);
-	exec_cmd(argv[3], envp);
-}
-
-int	main(int argc, char **argv, char **envp)
-{
-	int		fd[2];
-	pid_t	pid1;
-	pid_t	pid2;
-
-	if (argc != 5)
-	{
-		ft_putstr_fd(ERR_INPUT, 2);
-		return (EXIT_FAILURE);
-	}
-	if (pipe(fd) == -1)
-		err_msg(ERR_PIPE);
-	pid1 = fork();
-	if (pid1 == -1)
-		err_msg(ERR_FORK);
-	if (pid1 == 0)
-		child1(fd, argv, envp);
-	pid2 = fork();
-	if (pid2 == -1)
-		err_msg(ERR_FORK);
-	if (pid2 == 0)
-		child2(fd, argv, envp);
-	// 父进程必须关闭所有管道fd
-	close(fd[0]);
-	close(fd[1]);
-	waitpid(pid1, NULL, 0);
-	waitpid(pid2, NULL, 0);
-	return (EXIT_SUCCESS);
-}
- 
- 
- 
- 
-🔥 立刻测试（复制粘贴运行）
- 
-bash
-  
-# 编译
-make
-
-# 造测试文件
-echo "hello 42 barcelona" > infile
-
-# 运行 pipex
-./pipex infile "cat" "wc -w" outfile
-
-# 查看结果
-cat outfile
-# 输出：3（正确）
- 
- 
- 
- 
-✅ 我写代码的3个核心优势（评审必过）
- 
-1. 无任何内存泄漏：所有 malloc 都配对 free，无野指针
-2. 文件描述符安全：所有 fd 及时关闭，不会卡死
-3. 错误完全对齐 shell：找不到命令、打不开文件、权限错误都和 bash 行为一致
- 
- 
- 
-🚀 下一步：直接带你做 Bonus（加分项）
- 
-我可以继续给你写：
- 
-1. 多管道： ./pipex file1 cmd1 cmd2 cmd3 cmd4 file2 
-2. here_doc： ./pipex here_doc EOF cat "wc -l" outfile 
-
-Pipex Bonus 完整代码（多管道 + here_doc）
- 
-我给你独立可编译、无依赖、符合Norm的Bonus版，支持：
- 
-1. 多管道： ./pipex file1 cmd1 cmd2 cmd3 ... cmdn file2 
-2. here_doc： ./pipex here_doc LIMITER cmd1 cmd2 file （等价  cmd1 << LIMITER | cmd2 >> file ）
- 
-一、Makefile（新增 bonus 规则）
- 
-makefile
-  
+```makefile
 NAME        = pipex
-BONUS_NAME  = pipex_bonus
 CC          = cc
-CFLAGS      = -Wall -Wextra -Werror -std=c99
+CFLAGS      = -Wall -Wextra -Werror
 RM          = rm -rf
 
-# Mandatory
-SRCS        = pipex.c utils.c
+LIBFT_DIR   = libft
+LIBFT       = $(LIBFT_DIR)/libft.a
+INC         = -I includes -I $(LIBFT_DIR)
+
+SRCS        = src/pipex.c \
+              src/ft_error.c \
+              src/ft_path.c \
+              src/ft_exec.c
 OBJS        = $(SRCS:.c=.o)
 
-# Bonus
-BONUS_SRCS  = pipex_bonus.c utils_bonus.c
+BONUS_SRCS  = bonus/pipex_bonus.c \
+              bonus/ft_error_bonus.c \
+              bonus/ft_path_bonus.c \
+              bonus/ft_exec_bonus.c \
+              bonus/ft_here_doc_bonus.c
 BONUS_OBJS  = $(BONUS_SRCS:.c=.o)
 
-all: $(NAME)
+all: $(LIBFT) $(NAME)
 
 $(NAME): $(OBJS)
-	$(CC) $(CFLAGS) $(OBJS) -o $(NAME)
+$(CC) $(CFLAGS) $(OBJS) $(LIBFT) -o $(NAME)
 
-bonus: $(BONUS_NAME)
+bonus: $(LIBFT) $(BONUS_OBJS)
+$(CC) $(CFLAGS) $(BONUS_OBJS) $(LIBFT) -o $(NAME)
 
-$(BONUS_NAME): $(BONUS_OBJS)
-	$(CC) $(CFLAGS) $(BONUS_OBJS) -o $(BONUS_NAME)
+$(LIBFT):
+$(MAKE) -C $(LIBFT_DIR)
+
+%.o: %.c
+$(CC) $(CFLAGS) $(INC) -c $< -o $@
 
 clean:
-	$(RM) $(OBJS) $(BONUS_OBJS)
+$(MAKE) -C $(LIBFT_DIR) clean
+$(RM) $(OBJS) $(BONUS_OBJS)
 
 fclean: clean
-	$(RM) $(NAME) $(BONUS_NAME)
+$(MAKE) -C $(LIBFT_DIR) fclean
+$(RM) $(NAME)
 
 re: fclean all
 
-.PHONY: all clean fclean re bonus
- 
- 
-二、pipex_bonus.h
- 
-c
-  
+.PHONY: all bonus clean fclean re
+```
+
+---
+
+## 5. Parte bonus: paso a paso
+
+La parte bonus extiende el binario para soportar:
+
+1. **Múltiples comandos**: cualquier número de comandos enlazados en cadena.
+2. **`here_doc`**: lee de stdin hasta el limitador y usa `O_APPEND` en el fichero de salida.
+
+Los ficheros bonus son completamente independientes de los obligatorios: mismo
+binario final (`pipex`), pero compilado desde `bonus/`.
+
+---
+
+### 5.1 `includes/pipex_bonus.h`
+
+```c
 #ifndef PIPEX_BONUS_H
 # define PIPEX_BONUS_H
 
@@ -778,535 +806,539 @@ c
 # include <sys/types.h>
 # include <sys/stat.h>
 # include <fcntl.h>
-# include <stdio.h>
 # include <stdlib.h>
-# include <string.h>
+# include <stdio.h>
 # include <errno.h>
+# include "libft.h"
 
-# define ERR_INPUT   "Usage:\n  Mandatory: ./pipex file1 cmd1 cmd2 file2\n  Bonus: ./pipex file1 cmd1 ... cmdn file2\n  Bonus here_doc: ./pipex here_doc LIMITER cmd1 cmd2 file\n"
-# define ERR_PIPE    "Pipe error"
-# define ERR_FORK    "Fork error"
-# define ERR_OPEN    "Open error"
-# define ERR_CMD     "Command not found"
-# define ERR_EXEC    "Execve failed"
-# define HERE_DOC_FILE ".here_doc_tmp"
+# define ERR_ARGS   "Usage:\n  ./pipex file1 cmd1 ... cmdn file2\n" \
+                    "  ./pipex here_doc LIMITER cmd1 cmd2 file\n"
+# define ERR_PIPE   "pipe"
+# define ERR_FORK   "fork"
+# define ERR_OPEN   "open"
+# define ERR_CMD    "command not found"
+# define ERR_EXEC   "execve"
+# define HEREDOC_TMP  ".heredoc_tmp"    /* fichero temporal del here_doc */
 
-// utils_bonus.c
-void    err_msg(char *msg);
-void    free_split(char **str);
-char    *get_path(char *cmd, char **envp);
+/* ft_error_bonus.c */
+void    err_exit(char *msg);
+void    free_tab(char **tab);
+
+/* ft_path_bonus.c */
+char   *get_path(char *cmd, char **envp);
+
+/* ft_exec_bonus.c */
 void    exec_cmd(char *arg, char **envp);
-void    ft_putstr_fd(char *s, int fd);
-char    *ft_strjoin(char const *s1, char const *s2);
-char    **ft_split(char const *s, char c);
-int     ft_strncmp(const char *s1, const char *s2, size_t n);
-size_t  ft_strlen(const char *s);
-int     ft_strcmp(char *s1, char *s2);
 
-// pipex_bonus.c
-void    child_process(int fd_in, int fd_out, char *cmd, char **envp);
-void    pipex_multiple(int ac, char **av, char **envp);
+/* ft_here_doc_bonus.c */
 void    here_doc(char *limiter);
 
+/* pipex_bonus.c */
+void    child_process(int fd_in, int fd_out, char *cmd, char **envp);
+void    pipex_multiple(int ac, char **av, char **envp);
+
 #endif
- 
- 
-三、utils_bonus.c（内置所有工具函数）
- 
-c
-  
+```
+
+La diferencia respecto a `pipex.h` son la macro `HEREDOC_TMP`, el prototipo
+`here_doc` y el nombre del include guard.
+
+---
+
+### 5.2 `bonus/ft_error_bonus.c`
+
+Igual que la versión obligatoria, con un detalle extra: `err_exit` llama a
+`unlink(HEREDOC_TMP)` antes de salir para no dejar el fichero temporal en
+disco si el programa falla mientras lo estaba usando.
+
+```c
 #include "pipex_bonus.h"
 
-size_t  ft_strlen(const char *s)
-{
-    size_t i = 0;
-    while (s[i]) i++;
-    return i;
-}
-
-int     ft_strncmp(const char *s1, const char *s2, size_t n)
-{
-    size_t i = 0;
-    if (n == 0) return 0;
-    while (i < n - 1 && s1[i] && s2[i] && s1[i] == s2[i]) i++;
-    return ((unsigned char)s1[i] - (unsigned char)s2[i]);
-}
-
-int     ft_strcmp(char *s1, char *s2)
-{
-    int i = 0;
-    while (s1[i] && s2[i] && s1[i] == s2[i]) i++;
-    return s1[i] - s2[i];
-}
-
-void    ft_putstr_fd(char *s, int fd)
-{
-    if (!s) return;
-    write(fd, s, ft_strlen(s));
-}
-
-char    *ft_strjoin(char const *s1, char const *s2)
-{
-    char    *str;
-    size_t  i, j;
-
-    if (!s1 || !s2) return NULL;
-    str = malloc(ft_strlen(s1) + ft_strlen(s2) + 1);
-    if (!str) return NULL;
-    i = 0; while (s1[i]) { str[i] = s1[i]; i++; }
-    j = 0; while (s2[j]) str[i++] = s2[j++];
-    str[i] = 0;
-    return str;
-}
-
-static size_t count_words(char const *s, char c)
-{
-    size_t cnt = 0, i = 0;
-    while (s[i]) {
-        if (s[i] != c && (i == 0 || s[i-1] == c)) cnt++;
-        i++;
-    }
-    return cnt;
-}
-
-static char **free_all(char **arr)
-{
-    size_t i = 0;
-    while (arr[i]) { free(arr[i]); i++; }
-    free(arr);
-    return NULL;
-}
-
-static char *ft_substr(char const *s, unsigned int start, size_t len)
-{
-    char    *sub;
-    size_t  i;
-
-    if (!s) return NULL;
-    if (start >= ft_strlen(s)) return malloc(1);
-    if (len > ft_strlen(s) - start) len = ft_strlen(s) - start;
-    sub = malloc(len + 1);
-    if (!sub) return NULL;
-    i = 0;
-    while (i < len && s[start + i]) { sub[i] = s[start + i]; i++; }
-    sub[i] = 0;
-    return sub;
-}
-
-char    **ft_split(char const *s, char c)
-{
-    char    **res;
-    size_t  i = 0, j = 0, len;
-
-    res = malloc(sizeof(char *) * (count_words(s, c) + 1));
-    if (!res || !s) return NULL;
-    while (j < count_words(s, c)) {
-        while (s[i] == c) i++;
-        len = 0; while (s[i + len] && s[i + len] != c) len++;
-        res[j] = ft_substr(s, i, len);
-        if (!res[j]) return free_all(res);
-        i += len; j++;
-    }
-    res[j] = NULL;
-    return res;
-}
-
-void    err_msg(char *msg)
+void    err_exit(char *msg)
 {
     perror(msg);
-    unlink(HERE_DOC_FILE);
+    unlink(HEREDOC_TMP);   /* limpia el fichero temporal si existe */
     exit(EXIT_FAILURE);
 }
 
-void    free_split(char **str)
+void    free_tab(char **tab)
 {
-    int i = 0;
-    while (str[i]) { free(str[i]); i++; }
-    free(str);
-}
+    int i;
 
-char    *get_path(char *cmd, char **envp)
-{
-    char    **path_env, *path, *temp;
-    int     i = 0;
-
-    while (envp[i] && ft_strncmp(envp[i], "PATH=", 5)) i++;
-    if (!envp[i]) return NULL;
-    path_env = ft_split(envp[i] + 5, ':');
     i = 0;
-    while (path_env[i]) {
-        temp = ft_strjoin(path_env[i], "/");
-        path = ft_strjoin(temp, cmd);
-        free(temp);
-        if (access(path, F_OK | X_OK) == 0) {
-            free_split(path_env);
-            return path;
-        }
-        free(path);
+    while (tab[i])
+    {
+        free(tab[i]);
         i++;
     }
-    free_split(path_env);
-    return NULL;
+    free(tab);
 }
+```
 
-void    exec_cmd(char *arg, char **envp)
-{
-    char **cmd = ft_split(arg, ' ');
-    char *path;
+---
 
-    if (!cmd || !cmd[0]) { free_split(cmd); err_msg(ERR_CMD); }
-    path = get_path(cmd[0], envp);
-    if (!path) { free_split(cmd); err_msg(ERR_CMD); }
-    execve(path, cmd, envp);
-    free_split(cmd);
-    free(path);
-    err_msg(ERR_EXEC);
-}
- 
- 
-四、pipex_bonus.c（核心：多管道 + here_doc）
- 
-c
-  
+### 5.3 `bonus/ft_path_bonus.c` y `ft_exec_bonus.c`
+
+Idénticos a sus homólogos en `src/`, salvo que incluyen `pipex_bonus.h`.
+Se repiten porque la parte bonus debe compilar de forma autónoma.
+
+```c
+/* bonus/ft_path_bonus.c — igual lógica que src/ft_path.c */
 #include "pipex_bonus.h"
 
-// 通用子进程：输入fd_in → 输出fd_out → 执行命令
-void    child_process(int fd_in, int fd_out, char *cmd, char **envp)
+static char *check_paths(char **dirs, char *cmd) { /* ... igual ... */ }
+char        *get_path(char *cmd, char **envp)     { /* ... igual ... */ }
+```
+
+```c
+/* bonus/ft_exec_bonus.c — igual lógica que src/ft_exec.c */
+#include "pipex_bonus.h"
+
+void    exec_cmd(char *arg, char **envp) { /* ... igual ... */ }
+```
+
+---
+
+### 5.4 `bonus/ft_here_doc_bonus.c`
+
+El modo `here_doc` simula `<<` del shell: lee líneas de stdin hasta que
+aparece el limitador exacto y las almacena en un fichero temporal.
+
+```c
+#include "pipex_bonus.h"
+
+/*
+** Lee una línea completa del descriptor fd, un byte a la vez.
+** Devuelve NULL si el descriptor se cierra sin datos (EOF inmediato).
+*/
+static char *read_line(int fd)
 {
-    dup2(fd_in, 0);
-    dup2(fd_out, 1);
-    close(fd_in);
-    close(fd_out);
-    exec_cmd(cmd, envp);
+    char    *line;
+    char     c;
+    int      i;
+
+    line = malloc(4096);
+    if (!line)
+        return (NULL);
+    i = 0;
+    while (i < 4095 && read(fd, &c, 1) > 0)
+    {
+        line[i++] = c;
+        if (c == '\n')
+            break ;
+    }
+    if (i == 0)
+    {
+        free(line);
+        return (NULL);
+    }
+    line[i] = 0;
+    return (line);
 }
 
-// 多管道主逻辑（循环创建管道，链式执行）
-void    pipex_multiple(int ac, char **av, char **envp)
+/*
+** Comprueba si la línea leída es exactamente el limitador.
+** Se compara longitud + el carácter siguiente debe ser '\n' o '\0'
+** para evitar que "EOFMORE" dispare el limitador "EOF".
+*/
+static int  is_limiter(char *line, char *limiter, size_t len)
 {
-    int fd[2];
-    pid_t pid;
-    int in_fd;
-    int i = 2;
-
-    in_fd = open(av[1], O_RDONLY);
-    if (in_fd == -1) err_msg(ERR_OPEN);
-
-    while (i < ac - 2)
-    {
-        pipe(fd);
-        pid = fork();
-        if (pid == -1) err_msg(ERR_FORK);
-        if (pid == 0)
-        {
-            close(fd[0]);
-            child_process(in_fd, fd[1], av[i], envp);
-        }
-        close(fd[1]);
-        in_fd = fd[0];
-        i++;
-    }
-
-    // 最后一个命令 → 输出到file2
-    pid = fork();
-    if (pid == -1) err_msg(ERR_FORK);
-    if (pid == 0)
-    {
-        int out_fd = open(av[ac-1], O_WRONLY | O_CREAT | O_TRUNC, 0644);
-        if (out_fd == -1) err_msg(ERR_OPEN);
-        child_process(in_fd, out_fd, av[i], envp);
-    }
-    close(in_fd);
-    while (wait(NULL) > 0);
+    if (!line)
+        return (1);
+    if (ft_strncmp(line, limiter, len) == 0
+        && (line[len] == '\n' || line[len] == '\0'))
+        return (1);
+    return (0);
 }
 
-// here_doc：读取输入直到 LIMITER，写入临时文件
+/*
+** Lee stdin mostrando "> " como prompt hasta que aparece el limitador.
+** Todo lo leído se escribe en HEREDOC_TMP.
+*/
 void    here_doc(char *limiter)
 {
     int     fd;
     char    *line;
-    size_t  len = ft_strlen(limiter);
+    size_t   len;
 
-    fd = open(HERE_DOC_FILE, O_CREAT | O_RDWR | O_TRUNC, 0644);
-    if (fd == -1) err_msg("here_doc open error");
-
+    len = ft_strlen(limiter);
+    fd = open(HEREDOC_TMP, O_WRONLY | O_CREAT | O_TRUNC, 0644);
+    if (fd == -1)
+        err_exit("here_doc: open");
     while (1)
     {
         ft_putstr_fd("> ", 1);
-        line = get_next_line(0); // 读取终端输入
-        if (!line || ft_strncmp(line, limiter, len) == 0) break;
+        line = read_line(0);
+        if (is_limiter(line, limiter, len))
+        {
+            free(line);
+            break ;
+        }
         ft_putstr_fd(line, fd);
         free(line);
     }
-    free(line);
     close(fd);
 }
+```
 
-// 补充简易get_next_line（仅用于here_doc，无依赖）
-char    *get_next_line(int fd)
+---
+
+### 5.5 `bonus/pipex_bonus.c`
+
+Este archivo contiene la lógica de múltiples pipes y del modo `here_doc`.
+
+#### Función auxiliar: `child_process`
+
+Redirige `fd_in` → stdin y `fd_out` → stdout, cierra ambos y ejecuta el
+comando. Es el bloque reutilizable para todos los hijos.
+
+```c
+void    child_process(int fd_in, int fd_out, char *cmd, char **envp)
 {
-    char    *line = malloc(1024);
-    char    c;
-    int     i = 0;
-
-    if (!line) return NULL;
-    while (read(fd, &c, 1) > 0)
-    {
-        line[i++] = c;
-        if (c == '\n') break;
-    }
-    line[i] = 0;
-    return line;
+    dup2(fd_in,  STDIN_FILENO);
+    dup2(fd_out, STDOUT_FILENO);
+    close(fd_in);
+    close(fd_out);
+    exec_cmd(cmd, envp);
 }
+```
 
-// 主函数：区分 here_doc / 多管道 / 基础模式
-int     main(int ac, char **av, char **envp)
+#### Función auxiliar: `pipe_child`
+
+Crea un pipe, hace fork y lanza el hijo para un comando intermedio. El padre
+recibe el array `fd` relleno para poder encadenar el siguiente.
+
+```c
+static void pipe_child(int in_fd, int *fd, char *cmd, char **envp)
 {
-    if (ac < 5) { ft_putstr_fd(ERR_INPUT, 2); return 1; }
+    pid_t   pid;
 
-    // here_doc 模式：./pipex here_doc LIMITER cmd1 cmd2 file
+    if (pipe(fd) == -1)
+        err_exit(ERR_PIPE);
+    pid = fork();
+    if (pid == -1)
+        err_exit(ERR_FORK);
+    if (pid == 0)
+    {
+        close(fd[0]);                          /* el hijo no lee de este pipe */
+        child_process(in_fd, fd[1], cmd, envp);
+    }
+    /* el padre continúa aquí */
+}
+```
+
+#### Función auxiliar: `setup_pipeline`
+
+Itera sobre todos los comandos excepto el último. En cada iteración:
+
+1. Llama a `pipe_child` para lanzar el hijo `i`.
+2. Cierra el extremo de escritura (`fd[1]`) ya que sólo lo usa el hijo.
+3. Cierra `in_fd` (el extremo de lectura del pipe anterior) para no filtrarlo.
+4. Guarda el nuevo extremo de lectura (`fd[0]`) como entrada del siguiente hijo.
+
+```c
+static int  setup_pipeline(int ac, char **av, char **envp)
+{
+    int     fd[2];
+    int     in_fd;
+    int     i;
+
+    in_fd = open(av[1], O_RDONLY);
+    if (in_fd == -1)
+        err_exit(ERR_OPEN);
+    i = 2;
+    while (i < ac - 2)           /* todos menos el último comando */
+    {
+        pipe_child(in_fd, fd, av[i], envp);
+        close(fd[1]);            /* padre no necesita escribir */
+        close(in_fd);            /* ya pasado al hijo anterior */
+        in_fd = fd[0];           /* próxima entrada es este extremo lector */
+        i++;
+    }
+    return (in_fd);              /* extremo lector del último pipe creado */
+}
+```
+
+#### Función auxiliar: `last_child`
+
+Lanza el último comando conectando su salida directamente al fichero de salida.
+
+```c
+static void last_child(int in_fd, char *outfile, char *cmd, char **envp)
+{
+    int     out_fd;
+    pid_t   pid;
+
+    out_fd = open(outfile, O_WRONLY | O_CREAT | O_TRUNC, 0644);
+    if (out_fd == -1)
+        err_exit(ERR_OPEN);
+    pid = fork();
+    if (pid == -1)
+        err_exit(ERR_FORK);
+    if (pid == 0)
+        child_process(in_fd, out_fd, cmd, envp);
+    close(in_fd);
+    close(out_fd);
+}
+```
+
+#### Función principal del modo múltiple: `pipex_multiple`
+
+```c
+void    pipex_multiple(int ac, char **av, char **envp)
+{
+    int in_fd;
+
+    in_fd = setup_pipeline(ac, av, envp);
+    last_child(in_fd, av[ac - 1], av[ac - 2], envp);
+    while (wait(NULL) > 0)    /* espera a TODOS los hijos */
+        ;
+}
+```
+
+`wait(NULL)` en bucle recoge todos los zombies sin importar el orden de
+finalización. Devuelve `-1` cuando no quedan más hijos.
+
+#### Modo `here_doc`: `here_doc_mode`
+
+```c
+static void here_doc_mode(char **av, char **envp)
+{
+    int     in_fd;
+    int     out_fd;
+    int     fd[2];
+    pid_t   pid1;
+    pid_t   pid2;
+
+    here_doc(av[2]);                  /* rellena HEREDOC_TMP */
+    in_fd  = open(HEREDOC_TMP, O_RDONLY);
+    if (in_fd == -1)
+        err_exit(ERR_OPEN);
+    out_fd = open(av[5], O_WRONLY | O_CREAT | O_APPEND, 0644); /* >> */
+    if (out_fd == -1)
+        err_exit(ERR_OPEN);
+    if (pipe(fd) == -1)
+        err_exit(ERR_PIPE);
+    pid1 = fork();
+    if (pid1 == -1)
+        err_exit(ERR_FORK);
+    if (pid1 == 0)
+    {
+        close(fd[0]);
+        child_process(in_fd, fd[1], av[3], envp);   /* cmd1 */
+    }
+    pid2 = fork();
+    if (pid2 == -1)
+        err_exit(ERR_FORK);
+    if (pid2 == 0)
+    {
+        close(fd[1]);
+        child_process(fd[0], out_fd, av[4], envp);  /* cmd2 */
+    }
+    close(fd[0]);
+    close(fd[1]);
+    close(in_fd);
+    close(out_fd);
+    wait(NULL);
+    wait(NULL);
+    unlink(HEREDOC_TMP);  /* borra el fichero temporal */
+}
+```
+
+Por qué `O_APPEND`: el enunciado del proyecto establece que `here_doc` es
+equivalente a `>> file` (modo añadir), no a `> file` (modo truncar).
+
+#### `main` de la parte bonus
+
+```c
+int main(int ac, char **av, char **envp)
+{
+    if (ac < 5)
+    {
+        ft_putstr_fd(ERR_ARGS, 2);
+        return (EXIT_FAILURE);
+    }
     if (ft_strcmp(av[1], "here_doc") == 0)
     {
-        if (ac != 6) { ft_putstr_fd(ERR_INPUT, 2); return 1; }
-        here_doc(av[2]);
-        // 输入为临时文件，输出追加模式
-        int in_fd = open(HERE_DOC_FILE, O_RDONLY);
-        int out_fd = open(av[5], O_WRONLY | O_CREAT | O_APPEND, 0644);
-        int fd[2]; pipe(fd);
-        pid_t pid1 = fork();
-        if (pid1 == 0) { dup2(in_fd, 0); dup2(fd[1], 1); exec_cmd(av[3], envp); }
-        pid_t pid2 = fork();
-        if (pid2 == 0) { dup2(fd[0], 0); dup2(out_fd, 1); exec_cmd(av[4], envp); }
-        close(fd[0]); close(fd[1]); close(in_fd); close(out_fd);
-        wait(NULL); wait(NULL);
-        unlink(HERE_DOC_FILE); // 删除临时文件
+        if (ac != 6)
+        {
+            ft_putstr_fd(ERR_ARGS, 2);
+            return (EXIT_FAILURE);
+        }
+        here_doc_mode(av, envp);
     }
-    else // 多管道模式
+    else
         pipex_multiple(ac, av, envp);
-
-    return 0;
+    return (EXIT_SUCCESS);
 }
- 
- 
- 
- 
-🔥 编译 & 测试（直接复制运行）
- 
-1. 编译Bonus
- 
-bash
-  
+```
+
+---
+
+## 6. Compilar y ejecutar
+
+```bash
+# Compilar parte obligatoria
+make
+
+# Compilar parte bonus (reemplaza el binario pipex)
 make bonus
- 
- 
-2. 多管道测试
- 
-bash
-  
-echo "test 1 2 3" > infile
-./pipex_bonus infile "cat" "grep test" "wc -w" outfile
-cat outfile  # 输出 3
- 
- 
-3. here_doc 测试
- 
-bash
-  
-./pipex_bonus here_doc EOF cat "wc -w" outfile
-# 终端输入：
-hello 42 barcelona
-EOF
-cat outfile  # 输出 3
- 
- 
- 
- 
-✅ Bonus 评审必过关键点
- 
-1. 多管道：用循环链式创建管道，支持任意数量命令
-2. here_doc：临时文件自动创建/删除，输出追加模式
-3. 无内存泄漏：所有malloc/free配对，临时文件自动清理
-4. FD安全：所有文件描述符及时关闭
-5. 错误与shell一致：权限、文件、命令错误完全对齐bash
- 
- 
- 
-🎯 全部完成！
- 
-现在你拥有：
- 
-- Mandatory：双管道基础版
-- Bonus：多管道 + here_doc加分版
-- 全代码可编译、可运行、无依赖、过42评审
 
-下面给你42 Barcelona Pipex 评审满分问答清单（考官必问 + 标准答案）
-我按Mandatory / Bonus / 原理 / 错误处理 / Norm内存分类，你背下来答辩零失误，全是考官原话。
- 
-Pipex 评审问答清单（必背版）
- 
-一、基础概念（必考，前3题必问）
- 
-Q1：这个项目的目的是什么？
- 
-答：用C复刻shell管道  < file1 cmd1 | cmd2 > file2 ，掌握进程创建fork、管道pipe、文件描述符重定向dup2、程序替换execve这四个UNIX核心机制。
- 
-Q2：管道 pipe() 是什么？工作原理？
- 
-答：pipe是内核提供的单向字节流通信，返回两个fd：
- 
-- fd[0]：读端
-- fd[1]：写端
-数据从写端写入，读端读出；必须父子进程共用才能通信。
- 
-Q3：fork() 做了什么？返回值含义？
- 
-答：fork创建一个子进程，父子进程代码完全复制，内存独立。
-返回值：
- 
--  -1 ：创建失败
--  0 ：当前是子进程
--  >0 ：当前是父进程，返回值是子进程PID
- 
-Q4：dup2() 的作用？为什么要用？
- 
-答：dup2复制文件描述符，实现IO重定向。
-用法： dup2(oldfd, newfd) ，把newfd指向oldfd的资源。
-项目中用来：把标准输入0/标准输出1 重定向到文件或管道。
- 
-Q5：execve() 做了什么？为什么不return？
- 
-答：execve替换当前进程的程序镜像，执行新命令。
-成功后不会返回，原进程代码完全被覆盖；只有失败才返回-1。
- 
- 
- 
-二、Mandatory 核心逻辑（考官逐行问）
- 
-Q1：你的程序执行流程是什么？
- 
-答：
- 
-1. 校验参数必须4个
-2. open输入/输出文件
-3. pipe创建管道
-4. fork两个子进程
-5. 子1：重定向输入→file1，输出→管道写端，exec cmd1
-6. 子2：重定向输入→管道读端，输出→file2，exec cmd2
-7. 父进程关闭所有fd，waitpid回收子进程
- 
-Q2：为什么父进程要close管道fd？不close会怎样？
- 
-答：管道读端只有所有写端关闭才会返回EOF。
-父进程不close → 管道一直打开 → 子进程阻塞卡死 → 程序不退出。
- 
-Q3：为什么要 wait/waitpid？
- 
-答：回收子进程，避免僵尸进程；同时保证父进程等命令执行完再退出。
- 
-Q4：命令路径怎么找的？PATH是什么？
- 
-答：遍历环境变量 envp 中的 PATH ，拼接 /命令名 ，用 access 检查是否可执行。
-PATH是系统存放可执行文件的目录列表。
- 
- 
- 
-三、Bonus 问答（多管道 + here_doc）
- 
-Q1：多管道怎么实现的？
- 
-答：循环创建管道，链式传递：
- 
-- 上一个命令的输出 = 下一个命令的输入
-- 保存前一个管道读端作为下一次的输入fd
-- 最后一个命令直接写入输出文件
- 
-Q2：here_doc 是什么？你的实现？
- 
-答：here_doc是标准输入重定向，读取终端输入直到限定符。
-实现：
- 
-1. 创建临时文件，读取输入写入
-2. 把临时文件作为输入
-3. 输出文件用O_APPEND追加模式
-4. 结束后unlink删除临时文件
- 
-Q3：here_doc 为什么用 O_APPEND？
- 
-答：题目要求等价  >> file ，追加而不是覆盖原文件。
- 
- 
- 
-四、错误处理 & 鲁棒性（扣分重灾区）
- 
-Q1：你怎么处理错误？
- 
-答：所有系统调用全检查返回值（open/pipe/fork/dup2/execve）
- 
-- 失败用perror打印信息
-- 释放内存、关闭fd、删除临时文件
-- 正常exit退出，绝不崩溃
- 
-Q2：什么是文件描述符泄漏？怎么避免？
- 
-答：fd未close，资源耗尽。
-避免：每个open/pipe的fd，用完必close；子进程复制后立即关闭无用fd。
- 
-Q3：内存泄漏怎么检查？
- 
-答：所有malloc（split/strjoin）都配对free；二维数组逐行释放再free本体。
- 
-Q4：命令不存在/文件无权限怎么处理？
- 
-答：和shell行为一致，perror打印错误，进程退出，不崩溃。
- 
- 
- 
-五、Norm & 规范（42零容忍）
- 
-Q1：你的代码符合Norm吗？
- 
-答：符合：
- 
-- 无全局变量（bonus也没有）
-- 函数不超过25行
-- 变量声明在函数开头
-- 无多余空格、正确缩进
-- 禁止forbidden函数
- 
-Q2：Makefile 规则？不relink是什么？
- 
-答：包含 all/clean/fclean/re/bonus ；
-不relink：修改源文件才重新编译，无修改不重复链接。
- 
- 
- 
-六、考官刁难题（满分加分）
- 
-Q1：管道是全双工吗？
- 
-答：半双工，单向通信；双向需要两个管道。
- 
-Q2：子进程为什么能继承fd？
- 
-答：fork后子进程复制父进程的文件描述符表，指向同一个内核文件表。
- 
-Q3：execve会关闭fd吗？
- 
-答：默认不会，所以必须手动close所有无用fd，避免泄漏。
- 
- 
- 
-答辩万能话术（卡住直接说）
- 
-1. 这个项目核心是进程间通信 + IO重定向
-2. 所有系统调用我都严格检查返回值
-3. 我保证无fd泄漏、无内存泄漏、无崩溃
-4. 行为完全对齐shell，符合题目要求
- 
- 
- 
-最后3个必做检查（答辩前1分钟）
- 
-1.  make re  无警告无报错
-2.  valgrind ./pipex ...  无泄漏
-3. 测试边界：坏文件、坏命令、无权限 → 不崩溃
+# Limpiar objetos
+make clean
 
+# Limpiar objetos y binario
+make fclean
+
+# Recompilar desde cero
+make re
+```
+
+---
+
+## 7. Casos de prueba completos
+
+### Parte obligatoria
+
+```bash
+# Preparar fichero de entrada
+echo "hello 42 barcelona" > infile
+
+# Prueba básica
+./pipex infile "cat" "wc -w" outfile
+cat outfile                         # debe imprimir 3
+< infile cat | wc -w               # comprobación shell: debe coincidir
+
+# Comando con argumentos
+./pipex infile "grep 42" "wc -c" outfile
+cat outfile
+< infile grep 42 | wc -c
+
+# Fichero de entrada inexistente (debe mostrar error, no bloquear)
+./pipex no_existe "cat" "wc -w" outfile
+echo "Código de salida: $?"
+
+# Comando inexistente (debe mostrar error, no bloquear)
+./pipex infile "comandofalso" "wc -w" outfile
+echo "Código de salida: $?"
+
+# Sin permisos de lectura
+touch bloqueado && chmod 000 bloqueado
+./pipex bloqueado "cat" "wc -w" outfile
+chmod 644 bloqueado && rm bloqueado
+
+# Número incorrecto de argumentos
+./pipex
+./pipex infile "cat"
+```
+
+### Parte bonus — múltiples pipes
+
+```bash
+echo "test 1 2 3" > infile2
+
+# Tres comandos
+./pipex infile2 "cat" "grep test" "wc -w" outfile
+cat outfile                                 # debe imprimir 4
+< infile2 cat | grep test | wc -w          # comprobación shell
+
+# Cuatro comandos
+./pipex infile2 "cat" "cat" "grep 1" "wc -c" outfile
+cat outfile
+< infile2 cat | cat | grep 1 | wc -c
+```
+
+### Parte bonus — here_doc
+
+```bash
+# Prueba básica (escribe las líneas, luego escribe el limitador)
+./pipex here_doc EOF cat "wc -w" outfile
+# Escribe cuando aparezca ">":
+#   hello world
+#   EOF
+cat outfile     # debe imprimir 2
+
+# Comprobar que es modo APPEND (ejecutar dos veces)
+./pipex here_doc STOP "cat" "wc -l" outfile
+# > line1
+# > line2
+# > STOP
+cat outfile     # debe tener el resultado del wc anterior + el nuevo
+
+# Limitador que es prefijo de otro (no debe dispararse antes)
+./pipex here_doc EOF cat "wc -l" outfile
+# > EOFMORE    ← no debe disparar el limtador
+# > EOF        ← éste sí
+cat outfile
+```
+
+---
+
+## 8. Errores frecuentes y cómo evitarlos
+
+| Síntoma | Causa más probable | Solución |
+|---|---|---|
+| El programa se bloquea para siempre | El padre no cierra `fd[0]` y `fd[1]` tras los forks | Añadir `close(fd[0]); close(fd[1]);` en el padre |
+| El pipe intermedio no cierra en el bonus | `in_fd` no se cierra en el bucle padre | Llamar `close(in_fd)` antes de reasignar `in_fd = fd[0]` |
+| Proceso zombie | `wait`/`waitpid` no se llama para todos los hijos | Usar `while (wait(NULL) > 0);` en la versión bonus |
+| Fugas de memoria | `ft_split` y `ft_strjoin` no se liberan | Llamar siempre a `free_tab` y `free` en todos los caminos de salida |
+| Comando no encontrado aunque existe | PATH no se lee correctamente | Verificar que `envp[i] + 5` salta `"PATH="` y que `ft_split` usa `':'` |
+| Fichero temporal `.heredoc_tmp` persiste | `unlink` no se llama en los caminos de error | Llamar `unlink(HEREDOC_TMP)` dentro de `err_exit` en la versión bonus |
+| `execve` falla silenciosamente | No se comprueba el retorno | Las líneas tras `execve` siempre indican un fallo; llamar a `err_exit` |
+| Limitador del here_doc dispara con prefijos | Comparación sólo con `strncmp` | Comprobar que el carácter en `line[len]` sea `'\n'` o `'\0'` |
+
+---
+
+## 9. Gestión de memoria y descriptores de fichero
+
+### Regla de oro para descriptores
+
+> Cada `open`, `pipe` y `dup2` que creas, tú eres responsable de cerrarlo.
+
+Mapa mental:
+
+```
+Acción                    →  Descriptor creado   →  Cuándo cerrarlo
+─────────────────────────────────────────────────────────────────────
+open(file1)               →  infile              →  después de dup2
+pipe(fd)                  →  fd[0], fd[1]        →  hijo: los no usados
+                                                     padre: ambos tras forks
+dup2(infile, STDIN)       →  alias en fd=0       →  el original infile
+dup2(fd[1], STDOUT)       →  alias en fd=1       →  el original fd[1]
+```
+
+### Regla de oro para memoria
+
+> Cada `malloc` (incluyendo los de `ft_split`, `ft_strjoin`, `ft_substr`) debe
+> tener un `free` correspondiente en **todos** los caminos de ejecución, tanto
+> en el éxito como en el error.
+
+```c
+/* Ejemplo correcto: liberar en el camino de error */
+path = get_path(cmd[0], envp);
+if (!path)
+{
+    free_tab(cmd);    /* ← liberar antes de salir */
+    err_exit(ERR_CMD);
+}
+execve(path, cmd, envp);
+/* execve no vuelve si tiene éxito, así que no hay fuga */
+free_tab(cmd);  /* sólo si execve falla */
+free(path);
+err_exit(ERR_EXEC);
+```
+
+### Verificar con Valgrind
+
+```bash
+echo "test" > infile
+valgrind --leak-check=full --show-leak-kinds=all \
+    ./pipex infile "cat" "wc -w" outfile
+```
+
+La salida debería mostrar `0 bytes in 0 blocks` en la sección
+`definitely lost`.
+
+---
+
+*Proyecto pipex — 42 Barcelona*
