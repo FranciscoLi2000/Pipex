@@ -1,143 +1,99 @@
-# Pipex · 三语说明 / Trilingual README / README Trilingüe
+# Pipex
 
-> 42 School project: reproduce Unix piping behavior in C using `pipe`, `fork`, `dup2`, and `execve`.
+![Language](https://img.shields.io/badge/language-C-blue.svg)
+![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)
 
----
+Pipex is a C program that reproduces Unix shell pipelines by connecting commands with pipes and managing input/output files, with optional heredoc support.
 
-## 中文（普通话）
+## Table of Contents
 
-### 项目简介
-`pipex` 复现以下 shell 行为：
+- [Project Introduction](#project-introduction)
+- [Installation](#installation)
+- [Usage](#usage)
+- [Contributing Guide](#contributing-guide)
+- [License](#license)
 
-```bash
-< file1 cmd1 | cmd2 > file2
-```
+## Project Introduction
 
-对应执行方式：
-
-```bash
-./pipex file1 "cmd1" "cmd2" file2
-```
-
-Bonus 支持：
-- 多命令管道：`./pipex file1 cmd1 cmd2 ... cmdn file2`
-- heredoc：`./pipex here_doc LIMITER cmd1 cmd2 file`
-
-### 项目结构
-- `src/`：必做部分源码
-- `bonus/`：Bonus 源码
-- `includes/`：头文件
-- `libft/`：静态库依赖
-- `Makefile`：构建规则
-
-### 编译
-```bash
-make
-make bonus
-make re
-```
-
-### 使用示例
-```bash
-./pipex infile "grep hello" "wc -l" outfile
-```
-
-### 常见要求
-- 正确处理进程与文件描述符
-- 避免内存泄漏
-- 处理系统调用错误（`open`, `pipe`, `fork`, `dup2`, `execve`）
-
----
-
-## English
-
-### Overview
-`pipex` reproduces this shell behavior:
+Pipex is a 42 School project focused on process management and inter-process communication. It mirrors this shell behavior:
 
 ```bash
-< file1 cmd1 | cmd2 > file2
+< infile cmd1 | cmd2 > outfile
 ```
 
-Equivalent program usage:
+**Tech Stack**
+- C (POSIX APIs: `pipe`, `fork`, `dup2`, `execve`)
+- Make (build automation)
+- libft (static utility library)
+
+**Key Features**
+- Executes a two-command pipeline with input/output redirection
+- Bonus: supports multiple commands in a pipeline
+- Bonus: supports `here_doc` for heredoc-style input
+- Robust error handling for system calls and file operations
+
+## Installation
+
+1. Clone the repository:
+   ```bash
+   git clone https://github.com/FranciscoLi2000/Pipex.git
+   ```
+2. Enter the project directory:
+   ```bash
+   cd Pipex
+   ```
+3. Build the mandatory version:
+   ```bash
+   make
+   ```
+4. (Optional) Build the bonus version:
+   ```bash
+   make bonus
+   ```
+5. (Optional) Clean build artifacts:
+   ```bash
+   make clean
+   make fclean
+   make re
+   ```
+
+## Usage
+
+### Mandatory usage
 
 ```bash
-./pipex file1 "cmd1" "cmd2" file2
+./pipex infile "cmd1" "cmd2" outfile
 ```
 
-Bonus features:
-- Multiple commands: `./pipex file1 cmd1 cmd2 ... cmdn file2`
-- heredoc mode: `./pipex here_doc LIMITER cmd1 cmd2 file`
+Example:
 
-### Project Layout
-- `src/`: mandatory implementation
-- `bonus/`: bonus implementation
-- `includes/`: headers
-- `libft/`: static library dependency
-- `Makefile`: build targets
-
-### Build
-```bash
-make
-make bonus
-make re
-```
-
-### Example
 ```bash
 ./pipex infile "grep hello" "wc -l" outfile
 ```
 
-### Key Expectations
-- Correct process and file descriptor handling
-- No memory leaks
-- Robust syscall error handling (`open`, `pipe`, `fork`, `dup2`, `execve`)
+### Bonus usage
 
----
-
-## Español
-
-### Resumen
-`pipex` reproduce este comportamiento de shell:
+Multiple commands:
 
 ```bash
-< file1 cmd1 | cmd2 > file2
+./pipex infile "cmd1" "cmd2" "cmd3" outfile
 ```
 
-Uso equivalente del programa:
+Heredoc mode:
 
 ```bash
-./pipex file1 "cmd1" "cmd2" file2
+./pipex here_doc LIMITER "cmd1" "cmd2" outfile
 ```
 
-Funcionalidades bonus:
-- Múltiples comandos: `./pipex file1 cmd1 cmd2 ... cmdn file2`
-- Modo heredoc: `./pipex here_doc LIMITER cmd1 cmd2 file`
+## Contributing Guide
 
-### Estructura del proyecto
-- `src/`: implementación obligatoria
-- `bonus/`: implementación bonus
-- `includes/`: cabeceras
-- `libft/`: dependencia de biblioteca estática
-- `Makefile`: reglas de compilación
+Contributions are welcome. To contribute:
 
-### Compilación
-```bash
-make
-make bonus
-make re
-```
-
-### Ejemplo
-```bash
-./pipex infile "grep hello" "wc -l" outfile
-```
-
-### Requisitos clave
-- Manejo correcto de procesos y descriptores de archivo
-- Sin fugas de memoria
-- Gestión sólida de errores de syscalls (`open`, `pipe`, `fork`, `dup2`, `execve`)
-
----
+1. Fork the repository and create a feature branch.
+2. Make your changes with clear, focused commits.
+3. Run `make` (and `make bonus` if relevant) to verify builds.
+4. Open a pull request describing the changes and rationale.
 
 ## License
-This project is under the MIT License. See `LICENSE`.
+
+This project is licensed under the MIT License. See [LICENSE](LICENSE) for details.
